@@ -1,5 +1,4 @@
 """只在预构建仓库的 CI 使用；应用开发者直接下载 Release。"""
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -54,12 +53,11 @@ else:
             raise RuntimeError('The Linux library exceeds the glibc 2.31 baseline')
 subprocess.run((['xvfb-run', '-a'] if target == 'linux' else []) + [str(smoke)], check=True, timeout=30)
 
-revision = subprocess.check_output(['git', '-c', f'safe.directory={ROOT}', 'rev-parse', 'HEAD'], text=True).strip()
+revision = os.environ['GITHUB_SHA']
 metadata = {
     'source': 'https://github.com/iKuuu-org/libui-ng', 'commit': revision,
     'upstream': '43ba1ef553c8993a43a67f1ce6e35983a2660d8c',
     'platform': target, 'arch': arch,
-    'library_sha256': hashlib.sha256(library.read_bytes()).hexdigest(),
     'dependencies': dependencies,
 }
 dist = ROOT / 'dist'
@@ -69,4 +67,4 @@ with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as output:
     output.write(library, name)
     output.write(ROOT / 'LICENSE.md', 'LICENSE.md')
     output.writestr('SOURCE.json', json.dumps(metadata, indent=2) + '\n')
-print(archive, hashlib.sha256(archive.read_bytes()).hexdigest())
+print(archive)
