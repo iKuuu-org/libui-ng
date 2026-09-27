@@ -1,183 +1,69 @@
-# build libui-ng
-name: CI
-
+name: Prebuilt libraries
 on:
   push:
-    branches: [ master ]
+    branches: [ikuuu-prebuilt]
+    tags: ['ikuuu-libui-*']
   pull_request:
-    branches: [ master ]
+    branches: [ikuuu-prebuilt]
   workflow_dispatch:
-
+permissions:
+  contents: read
 jobs:
-  meson-linux:
+  build:
     strategy:
       fail-fast: false
       matrix:
-        # ubuntu-18.04, ubuntu-latest (ubuntu-20.04)
-        os: [ubuntu-latest]
-        # x86, x64
-        arch: [x64]
-        libtype: [static, shared]
-        # debug, debugoptimized, release
-        buildtype: [debug]
+        include:
+          - {os: ubuntu-24.04, platform: linux, arch: x64, container: 'ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214'}
+          - {os: ubuntu-24.04-arm, platform: linux, arch: arm64, container: 'ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214'}
+          - {os: windows-2022, platform: windows, arch: x64}
+          - {os: macos-15-intel, platform: macos, arch: x64}
+          - {os: macos-15, platform: macos, arch: arm64}
     runs-on: ${{ matrix.os }}
-    name: Ubuntu-${{ matrix.arch }}-${{ matrix.libtype }}
+    container: ${{ matrix.container }}
     steps:
-      - name: Install Meson and Linux Deps
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
         run: |
-          python3 -m pip install --upgrade pip setuptools wheel
-          pip3 install meson ninja
-          sudo apt-get update -y
-          sudo apt-get install -y libgtk-3-dev xvfb
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Meson Setup Build
-        run: meson setup builddir --buildtype=${{ matrix.buildtype }} --default-library=${{ matrix.libtype }}
-      - name: Ninja Build
-        run: ninja -C builddir --verbose
-      - name: Run Tests
-        run: xvfb-run meson test -C builddir --verbose
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates python3-pip build-essential pkg-config libgtk-3-dev xvfb
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          name: Ubuntu-${{ matrix.arch }}-${{ matrix.libtype }}-${{ matrix.buildtype }}
-          # lib + header + examples + test + build-log
-          path: |
-            !builddir/meson-out/*.p/
-            builddir/meson-out/*
-            ui_unix.h
-            ui.h
-            builddir/meson-logs/*.txt
-
-  meson-windows:
-    strategy:
-      fail-fast: false
-      matrix:
-        # windows-latest, windows-2022
-        os: [windows-latest]
-        arch: [x86, x64]
-        libtype: [static] # FIXME [static, shared]
-        # debug, debugoptimized, release
-        buildtype: [debug]
-    runs-on: ${{ matrix.os }}
-    name: Win-${{ matrix.arch }}-${{ matrix.libtype }}
+          persist-credentials: false
+      - name: Build and check library
+        env:
+          LIBUI_PLATFORM: ${{ matrix.platform }}
+          LIBUI_ARCH: ${{ matrix.arch }}
+        run: python3 packaging/build.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: libui-${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+  release:
+    if: startsWith(github.ref, 'refs/tags/ikuuu-libui-')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      # Setup build env
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          python-version: '3.x'
-      - name: Install Meson+Ninja
+          path: dist
+          merge-multiple: true
+      - name: Record checksums
+        run: cd dist && sha256sum *.zip > SHA256SUMS
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
+        with:
+          subject-path: dist/*
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
-          python -m pip install --upgrade pip
-          pip install meson ninja
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: ${{ matrix.arch }}
-
-      - name: Meson Setup Build
-        shell: cmd
-        run: meson setup builddir --buildtype=${{ matrix.buildtype }} --default-library=${{ matrix.libtype }}
-      - name: Ninja Build
-        run: ninja -C builddir --verbose
-      - name: Run Tests
-        run: meson test -C builddir --verbose
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Win-${{ matrix.arch }}-${{ matrix.libtype }}-${{ matrix.buildtype }}
-          # lib + header + examples + test + build-log
-          path: |
-            !builddir/meson-out/*.p/
-            builddir/meson-out/libui.*
-            ui_windows.h
-            ui.h
-            builddir/meson-out/*.exe
-            builddir/meson-out/*.pdb
-            builddir/meson-logs/*.txt
-
-  meson-windows-mingw:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest]
-        arch: [x64]
-        # only support static
-        libtype: [static]
-        # debug, debugoptimized, release
-        buildtype: [release]
-    runs-on: ${{ matrix.os }}
-    name: Mingw-${{ matrix.arch }}-${{ matrix.libtype }}
-    defaults:
-      run:
-        shell: msys2 {0}
-    steps:
-      # Setup build env
-      - uses: msys2/setup-msys2@v2
-        with:
-          update: true
-          install: >-
-            base-devel
-            git
-          pacboy: >-
-            toolchain:x
-            meson:x
-      - uses: actions/checkout@v4
-      - name: Meson Setup Build
-        run: meson setup builddir --buildtype=${{ matrix.buildtype }} --default-library=static
-      - name: Ninja Build
-        run: ninja -C builddir --verbose
-      - name: Run Tests
-        run: meson test -C builddir --verbose
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Mingw-${{ matrix.arch }}-static-${{ matrix.buildtype }}
-          # lib + header + examples + test + build-log
-          path: |
-            builddir/meson-out/libui.a
-            ui_windows.h
-            ui.h
-            builddir/meson-out/*.exe
-            builddir/meson-logs/*.txt
-
-  meson-macos:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [macos-latest]
-        libtype: [static, shared]
-        # debug, debugoptimized, release
-        buildtype: [debug]
-    runs-on: ${{ matrix.os }}
-    name: macOS-x64-${{ matrix.libtype }}
-    steps:
-      - name: Unbreak Python in Github Actions
-        run: |
-          find /usr/local/bin -lname '*/Library/Frameworks/Python.framework/*' -delete
-          sudo rm -rf /Library/Frameworks/Python.framework/
-          brew install --force python3 && brew unlink python3 && brew unlink python3 && brew link --overwrite python3
-      - name: Install Meson and macOS Deps
-        run: |
-          brew update
-          brew install meson ninja
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Meson Setup Build
-        run: meson setup builddir --buildtype=${{ matrix.buildtype }} --default-library=${{ matrix.libtype }}
-      - name: Ninja Build
-        run: ninja -C builddir --verbose
-      - name: Run Tests
-        run: meson test -C builddir --verbose
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: macOS-x64-${{ matrix.libtype }}-${{ matrix.buildtype }}
-          # lib + header + examples + test + build-log
-          path: |
-            !builddir/meson-out/*.p/
-            builddir/meson-out/*
-            ui_darwin.h
-            ui.h
-            builddir/meson-logs/*.txt
+          printf 'Source commit: `%s`\n\nLinux: glibc <= 2.31. Windows: static MSVC runtime.\n' "$SOURCE_SHA" > notes.md
+          gh release create "$RELEASE_TAG" dist/* --verify-tag --title "$RELEASE_TAG" --notes-file notes.md
