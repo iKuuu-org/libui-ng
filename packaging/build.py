@@ -5,10 +5,9 @@ import os
 from pathlib import Path
 import platform
 import re
-import shutil
 import subprocess
-import sys
 import zipfile
+import venv
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -17,7 +16,11 @@ arch = os.environ['LIBUI_ARCH']
 host_arch = 'arm64' if platform.machine().lower() in ('aarch64', 'arm64') else 'x64'
 if arch != host_arch:
     raise RuntimeError('Build on a native runner of the requested architecture')
-subprocess.run([sys.executable, '-m', 'pip', 'install', 'meson==1.3.2', 'ninja==1.11.1.3'], check=True)
+# 构建依赖只写入专用环境，保留 runner 的系统 Python。
+venv.EnvBuilder(with_pip=True).create(ROOT / '.build-tools')
+python = ROOT / '.build-tools' / ('Scripts/python.exe' if target == 'windows' else 'bin/python')
+os.environ['PATH'] = str(python.parent) + os.pathsep + os.environ['PATH']
+subprocess.run([str(python), '-m', 'pip', 'install', 'meson==1.3.2', 'ninja==1.11.1.3'], check=True)
 if target == 'windows':
     vswhere = Path(os.environ['ProgramFiles(x86)']) / 'Microsoft Visual Studio/Installer/vswhere.exe'
     vs = subprocess.check_output([str(vswhere), '-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath'], text=True).strip()
@@ -31,8 +34,8 @@ if target == 'macos':
 options = ['--buildtype=release', '--default-library=shared', '-Dtests=false', '-Dexamples=false']
 if target == 'windows':
     options.append('-Db_vscrt=mt')
-subprocess.run([sys.executable, '-m', 'mesonbuild.mesonmain', 'setup', 'build', *options], check=True)
-subprocess.run([sys.executable, '-m', 'mesonbuild.mesonmain', 'compile', '-C', 'build'], check=True)
+subprocess.run([str(python), '-m', 'mesonbuild.mesonmain', 'setup', 'build', *options], check=True)
+subprocess.run([str(python), '-m', 'mesonbuild.mesonmain', 'compile', '-C', 'build'], check=True)
 out = ROOT / 'build/meson-out'
 name = {'windows': 'libui.dll', 'linux': 'libui.so', 'macos': 'libui.dylib'}[target]
 library = out / name
@@ -51,7 +54,7 @@ else:
             raise RuntimeError('The Linux library exceeds the glibc 2.31 baseline')
 subprocess.run((['xvfb-run', '-a'] if target == 'linux' else []) + [str(smoke)], check=True, timeout=30)
 
-revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+revision = subprocess.check_output(['git', '-c', f'safe.directory={ROOT}', 'rev-parse', 'HEAD'], text=True).strip()
 metadata = {
     'source': 'https://github.com/iKuuu-org/libui-ng', 'commit': revision,
     'upstream': '43ba1ef553c8993a43a67f1ce6e35983a2660d8c',
